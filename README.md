@@ -46,7 +46,24 @@ Install BLAST+ and MAFFT on your `PATH`:
 - `tblastn`
 - `mafft` (unless using `--skip-align`)
 
-The Python script uses only the Python standard library.
+The Python script uses only the Python standard library. The supplied
+`environment.yml` installs Python, BLAST+, and MAFFT from conda-forge/bioconda.
+
+With mamba:
+
+```bash
+mamba env create -f environment.yml
+mamba activate little_gene_finder
+```
+
+With pixi, import the same conda environment file into a new workspace:
+
+```bash
+pixi init --import environment.yml
+pixi shell
+```
+
+If you already have a pixi workspace, run `pixi import environment.yml` instead.
 
 ## Usage
 
