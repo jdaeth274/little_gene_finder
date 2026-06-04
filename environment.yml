@@ -1,0 +1,8 @@
+name: little_gene_finder
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.10
+  - blast
+  - mafft
