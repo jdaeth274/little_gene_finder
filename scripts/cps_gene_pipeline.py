@@ -86,6 +86,32 @@ class GeneCall:
     hits: list[Hit]
 
 
+@dataclass(frozen=True)
+class BreakEvent:
+    isolate: str
+    gene: str
+    status: str
+    source: str
+    break_type: str
+    query_left_end: int
+    query_right_start: int
+    missing_query_length: int
+    left_hsp: str
+    right_hsp: str
+    left_contig: str
+    left_subject_start: str
+    left_subject_end: str
+    right_contig: str
+    right_subject_start: str
+    right_subject_end: str
+    strands: str
+    assembly_gap_bases: str
+    assembly_gap_delta_from_query: str
+    assembly_gap_mod3: str
+    frameshift_suspect: str
+    notes: str
+
+
 def log(message: str) -> None:
     print(f"[cps-pipeline] {message}", file=sys.stderr, flush=True)
 
@@ -318,6 +344,155 @@ def extract_call_sequence(call: GeneCall, contigs: dict[str, str], gap_n: int) -
     return ("N" * gap_n).join(pieces)
 
 
+def expected_subject_gap(source: str, query_gap_length: int) -> int:
+    if source == "tblastn":
+        return query_gap_length * 3
+    return query_gap_length
+
+
+def subject_gap_between(left: Hit, right: Hit) -> int | None:
+    if left.contig != right.contig or left.strand != right.strand:
+        return None
+    if left.strand == "+":
+        return right.slo - left.shi - 1
+    return left.slo - right.shi - 1
+
+
+def break_type_for_hsp_pair(left: Hit, right: Hit, query_gap_length: int, fragmented_gap: int, frameshift_suspect: bool) -> str:
+    if left.contig != right.contig:
+        return "contig_break"
+    if left.strand != right.strand:
+        return "strand_switch"
+    if frameshift_suspect:
+        return "possible_frameshift"
+    if query_gap_length >= fragmented_gap:
+        return "internal_query_gap"
+    return "hsp_split"
+
+
+def break_events_for_call(call: GeneCall, fragmented_gap: int) -> list[BreakEvent]:
+    ordered = sorted(call.hits, key=lambda h: (h.qlo, h.qhi))
+    if not ordered:
+        return []
+
+    events: list[BreakEvent] = []
+    first = ordered[0]
+    last = ordered[-1]
+
+    if first.qlo > 1:
+        events.append(
+            BreakEvent(
+                isolate=call.isolate,
+                gene=call.gene,
+                status=call.status,
+                source=call.source,
+                break_type="missing_5_prime",
+                query_left_end=0,
+                query_right_start=first.qlo,
+                missing_query_length=first.qlo - 1,
+                left_hsp="",
+                right_hsp="1",
+                left_contig="",
+                left_subject_start="",
+                left_subject_end="",
+                right_contig=first.contig,
+                right_subject_start=str(first.sstart),
+                right_subject_end=str(first.send),
+                strands=first.strand,
+                assembly_gap_bases="",
+                assembly_gap_delta_from_query="",
+                assembly_gap_mod3="",
+                frameshift_suspect="no",
+                notes="reference/query start is not covered by selected HSPs",
+            )
+        )
+
+    for idx, (left, right) in enumerate(zip(ordered, ordered[1:]), start=1):
+        query_gap_length = max(0, right.qlo - left.qhi - 1)
+        assembly_gap = subject_gap_between(left, right)
+        expected_gap = expected_subject_gap(call.source, query_gap_length)
+        delta = assembly_gap - expected_gap if assembly_gap is not None else None
+        frameshift_suspect = call.source == "tblastn" and delta is not None and delta % 3 != 0
+        break_type = break_type_for_hsp_pair(left, right, query_gap_length, fragmented_gap, frameshift_suspect)
+        if assembly_gap is None:
+            gap_text = ""
+            delta_text = ""
+            mod_text = ""
+        else:
+            gap_text = str(assembly_gap)
+            delta_text = str(delta)
+            mod_text = str(abs(delta) % 3)
+
+        notes = []
+        if assembly_gap is not None and assembly_gap < 0:
+            notes.append("selected HSPs overlap on the assembly")
+        if assembly_gap is not None and assembly_gap > 0:
+            notes.append("unmatched assembly sequence lies between selected HSPs")
+        if query_gap_length > 0:
+            notes.append("reference/query positions are missing between selected HSPs")
+        if frameshift_suspect:
+            notes.append("tBLASTn split has a non-triplet assembly/query gap delta")
+        if not notes:
+            notes.append("selected HSPs are adjacent or nearly adjacent")
+
+        events.append(
+            BreakEvent(
+                isolate=call.isolate,
+                gene=call.gene,
+                status=call.status,
+                source=call.source,
+                break_type=break_type,
+                query_left_end=left.qhi,
+                query_right_start=right.qlo,
+                missing_query_length=query_gap_length,
+                left_hsp=str(idx),
+                right_hsp=str(idx + 1),
+                left_contig=left.contig,
+                left_subject_start=str(left.sstart),
+                left_subject_end=str(left.send),
+                right_contig=right.contig,
+                right_subject_start=str(right.sstart),
+                right_subject_end=str(right.send),
+                strands=f"{left.strand}/{right.strand}",
+                assembly_gap_bases=gap_text,
+                assembly_gap_delta_from_query=delta_text,
+                assembly_gap_mod3=mod_text,
+                frameshift_suspect="yes" if frameshift_suspect else "no",
+                notes="; ".join(notes),
+            )
+        )
+
+    if last.qhi < call.qlen:
+        events.append(
+            BreakEvent(
+                isolate=call.isolate,
+                gene=call.gene,
+                status=call.status,
+                source=call.source,
+                break_type="missing_3_prime",
+                query_left_end=last.qhi,
+                query_right_start=call.qlen + 1,
+                missing_query_length=call.qlen - last.qhi,
+                left_hsp=str(len(ordered)),
+                right_hsp="",
+                left_contig=last.contig,
+                left_subject_start=str(last.sstart),
+                left_subject_end=str(last.send),
+                right_contig="",
+                right_subject_start="",
+                right_subject_end="",
+                strands=last.strand,
+                assembly_gap_bases="",
+                assembly_gap_delta_from_query="",
+                assembly_gap_mod3="",
+                frameshift_suspect="no",
+                notes="reference/query end is not covered by selected HSPs",
+            )
+        )
+
+    return events
+
+
 def write_summary(calls: list[GeneCall], genes: list[str], isolates: list[str], path: Path) -> None:
     by_key = {(c.isolate, c.gene): c for c in calls}
     fields = [
@@ -394,6 +569,16 @@ def write_bed(calls: list[GeneCall], path: Path) -> None:
                     )
                     + "\n"
                 )
+
+
+def write_breakpoints(calls: list[GeneCall], path: Path, fragmented_gap: int) -> None:
+    fields = list(BreakEvent.__dataclass_fields__)
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, delimiter="\t", fieldnames=fields)
+        writer.writeheader()
+        for call in sorted(calls, key=lambda c: (c.isolate, c.gene)):
+            for event in break_events_for_call(call, fragmented_gap):
+                writer.writerow({field: getattr(event, field) for field in fields})
 
 
 def run_alignments(per_gene_dir: Path, aln_dir: Path, threads: int, dry_run: bool = False) -> None:
@@ -527,6 +712,7 @@ def main(argv: list[str] | None = None) -> int:
 
     write_summary(calls, genes, isolate_names, args.outdir / "summary.tsv")
     write_bed(calls, args.outdir / "cps_hits.bed")
+    write_breakpoints(calls, args.outdir / "breakpoints.tsv", args.fragmented_gap)
 
     if not args.skip_align:
         run_alignments(per_gene_dir, aln_dir, args.threads, args.dry_run)

@@ -101,6 +101,7 @@ The pipeline writes these files below `results/cps/` by default:
 blastdb/                 per-isolate nucleotide BLAST databases
 blast/                   raw blastn/tblastn tabular output
 summary.tsv              one row per isolate/gene with status and metrics
+breakpoints.tsv          missing/split-hit breakpoints for disrupted calls
 cps_hits.bed             BED6 coordinates for selected HSPs
 sequences/               extracted hit FASTA per isolate
 per_gene/                unaligned extracted FASTA split by gene
@@ -110,6 +111,15 @@ alignments/              MAFFT alignment per gene
 `summary.tsv` includes status, selected search source, query coverage, mean
 identity, HSP count, contig count, and the largest gap between selected HSPs on
 the query.
+
+`breakpoints.tsv` is intended to make disrupted genes easier to inspect before
+primer design. It reports terminal missing regions (`missing_5_prime` and
+`missing_3_prime`), internal gaps between selected HSPs, contig breaks, strand
+switches, and `possible_frameshift` events. For each event it includes the
+reference/query coordinates around the break, the neighbouring HSP assembly
+coordinates, the inferred assembly gap, and a `frameshift_suspect` flag for
+`tBLASTn` splits where the assembly/query gap difference is not a multiple of
+three.
 
 For fragmented calls, selected HSP nucleotide sequences are oriented to the gene,
 ordered by query coordinate, and concatenated with a configurable run of `N`s
